@@ -6,6 +6,26 @@ wRPC follows client-server model, where peers (servers) may *serve* function and
 
 wRPC relies on [component model value definition encoding] for data encoding on the wire.
 
+```text
++-------------------+         +-------------------+
+|    Invoker API    | <-----> |    Client (per    |
+| (transport-agnostic)        |   transport)      |
++-------------------+         +-------------------+
+         |                              |
+         | invoke()                     | invoke()
+         v                              v
++-------------------+         +-------------------+
+|   Transport Impl  |         |   Transport Impl  |
+|   (NATS, TCP, ...)          |   (NATS, TCP, ...)|
++-------------------+         +-------------------+
+         |                              |
+         | multiplexed streams          |
+         v                              v
++-------------------+         +-------------------+
+|  Remote Function  |         |  Remote Function  |
++-------------------+         +-------------------+
+```
+
 ## Definitions
 
 ### Transport
@@ -86,6 +106,10 @@ It is assumed that streams using this framing protocol can communicate "closing"
 ### TCP
 
 TCP relies on [Framed stream specification](#framed-stream-specification) to map a single TCP stream to a single wRPC invocation.
+
+The TCP transport uses this custom framing for multiplexed streams and substreams via path indexing.
+
+Each invocation can have multiple substreams, addressed by "paths" (arrays of optional indices). This allows for complex, tree-structured data flows (e.g., streaming parameters/results, indexed substreams).
 
 The server MUST listen on a TCP socket and client MUST establish a new connection to that socket per each invocation.
 

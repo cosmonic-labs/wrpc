@@ -171,14 +171,15 @@ func putBuffer(buf *bytes.Buffer) {
 
 // paramWriter implements wrpc.IndexWriteCloser for writing parameters to the server
 type paramWriter struct {
-	ctx      context.Context
-	conn     *net.TCPConn
-	path     []uint32
-	buffer   *bytes.Buffer
-	mutex    sync.Mutex
-	parent   *paramWriter
-	children map[string]*paramWriter
-	refCount *atomic.Int32
+	ctx          context.Context
+	conn         *net.TCPConn
+	path         []uint32
+	buffer       *bytes.Buffer
+	mutex        sync.Mutex
+	parent       *paramWriter
+	children     map[string]*paramWriter
+	refCount     *atomic.Int32
+	isInvocation bool
 }
 
 // Write implements the io.Writer interface
@@ -278,26 +279,6 @@ func (w *paramWriter) Close() error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	// Flush any remaining data
-	if w.buffer.Len() > 0 {
-		if err := w.flush(); err != nil {
-			return err
-		}
-	}
-
-	// Send an empty frame to signal the end of the stream
-	frame, err := encodeFrame(w.path, nil)
-	if err != nil {
-		return fmt.Errorf("failed to encode end-of-stream frame: %w", err)
-	}
-
-	if _, err := w.conn.Write(frame); err != nil {
-		return fmt.Errorf("failed to send end-of-stream frame: %w", err)
-	}
-
-	// Return the buffer to the pool
-	putBuffer(w.buffer)
-
 	// Remove from parent's children if we have a parent
 	if w.parent != nil {
 		for k, child := range w.parent.children {
@@ -314,9 +295,34 @@ func (w *paramWriter) Close() error {
 		"path", w.path,
 		"refs", refs)
 
+	if !w.isInvocation {
+		// Flush any remaining data
+		if w.buffer.Len() > 0 {
+			if err := w.flush(); err != nil {
+				return err
+			}
+		}
+
+		// Send an empty frame to signal the end of the stream
+		frame, err := encodeFrame(w.path, nil)
+		if err != nil {
+			return fmt.Errorf("failed to encode end-of-stream frame: %w", err)
+		}
+
+		if _, err := w.conn.Write(frame); err != nil {
+			return fmt.Errorf("failed to send end-of-stream frame: %w", err)
+		}
+	}
+
+	// Return the buffer to the pool
+	putBuffer(w.buffer)
+
 	// Don't close the connection here, let the resultReader close it
 	if refs == 0 && w.parent == nil && w.conn != nil {
-		slog.DebugContext(w.ctx, "last parameter writer closed, but not closing connection")
+		slog.DebugContext(w.ctx, "last parameter writer closed, closing write stream")
+		if err := w.conn.CloseWrite(); err != nil {
+			return fmt.Errorf("failed to close write stream: %w", err)
+		}
 	}
 
 	return nil
@@ -697,7 +703,9 @@ func createInvocationFrame(instance string, name string, buf []byte, header Head
 
 	// Write parameter buffer length and data
 	frame = appendUleb128(frame, uint64(len(buf)))
-	frame = append(frame, buf...)
+	if len(buf) > 0 {
+		frame = append(frame, buf...)
+	}
 
 	return frame, nil
 }
